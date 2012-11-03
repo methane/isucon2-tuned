@@ -160,7 +160,6 @@ def close_db_connection(exception):
 @app.route("/")
 def top_page():
     cur = get_db().cursor()
-    print _recent_sold
     return render_template('index.html',
             artists=ARTISTS).replace(RECENT_SOLD_KEY, _recent_sold)
 
