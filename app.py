@@ -4,6 +4,9 @@ from __future__ import with_statement
 
 import time
 import jinja2
+import redis
+import cPickle
+import signal
 
 try:
     import MySQLdb
@@ -20,15 +23,20 @@ from collections import defaultdict
 
 config = {}
 
+redis_host = None
 
 RECENT_SOLD_KEY = "<!--# include recent_sold -->"
 
 app = Flask(__name__, static_url_path='')
 
 def load_config():
-    global config
+    global config, redis_host
     print "Loading configuration"
     env = os.environ.get('ISUCON_ENV') or 'local'
+    if env == 'local':
+        redis_host = '127.0.0.1'
+    else:
+        redis_host = 'db24'
     with open('../config/common.' + env + '.json') as fp:
         config = json.load(fp)
 
@@ -51,7 +59,8 @@ def init_db():
                 if len(line) > 0:
                     cur.execute(line)
     db = connect_db()
-    initialize()
+    notify_update(None, (None, None))
+    time.sleep(1)
 
 def get_recent_sold(db):
     cur = db.cursor()
@@ -88,6 +97,7 @@ def initialize():
             db = connect_db()
             break
         except Exception as e:
+            raise
             print e
             time.sleep(1)
             continue
@@ -218,11 +228,12 @@ def buy_page():
         );
         stock = cur.fetchone()
         cur.execute('COMMIT')
-        render_recent_sold(db)
-        variation = VARIATIONS[int(variation_id)]
-        variation['vacancy'] -= 1
-        variation['stock'][stock['seat_id']] = member_id
-        variation['ticket']['count'] -= 1
+        notify_update(int(variation_id), (member_id, stock['seat_id']))
+        #render_recent_sold(db)
+        #variation = VARIATIONS[int(variation_id)]
+        #variation['vacancy'] -= 1
+        #variation['stock'][stock['seat_id']] = member_id
+        #variation['ticket']['count'] -= 1
         return render_template('complete.html', seat_id=stock['seat_id'], member_id=member_id)
     else:
         cur.execute('ROLLBACK')
@@ -286,17 +297,66 @@ def static_middleware(app):
         return app(env, start)
     return get_cache
 
+def notify_update(name, obj):
+    client = redis.StrictRedis(redis_host)
+    client.publish("isucon", cPickle.dumps((name, obj)))
+
+def subscribe_update():
+    client = redis.Redis(redis_host)
+    pubsub = client.pubsub()
+    pubsub.subscribe("isucon")
+    for msg in pubsub.listen():
+        if msg['type'] != 'message':
+            continue
+        variation_id, (member_id, seat_id) = cPickle.loads(msg['data'])
+        if variation_id == None:
+            with app.test_request_context():
+                initialize()
+        else:
+            render_recent_sold(connect_db())
+            variation = VARIATIONS[int(variation_id)]
+            variation['vacancy'] -= 1
+            variation['stock'][seat_id] = member_id
+            variation['ticket']['count'] -= 1
+
 app.wsgi_app = static_middleware(app.wsgi_app)
 
-if __name__ == "__main__":
-    with app.test_request_context():
-        prepare_static('static/')
-        load_config()
-        initialize()
-    import meinheld.server
+def main():
+    import meinheld
+    import threading
+    from multiprocessing import Process
 
+    load_config()
+    prepare_static('static/')
+    with app.test_request_context():
+        initialize()
     port = int(os.environ.get("PORT", '5000'))
-    #app.run(debug=1, host='0.0.0.0', port=port)
-    meinheld.server.listen(('0.0.0.0', port))
-    meinheld.server.set_backlog(100)
-    meinheld.server.run(app)
+
+    def kill_all():
+        for w in workers:
+            w.terminate()
+    signal.signal(signal.SIGTERM, kill_all)
+
+    def run():
+        #meinheld.spawn(subscribe_update)
+        th = threading.Thread(target=subscribe_update)
+        th.daemon = True
+        th.start()
+        meinheld.run(app.wsgi_app)
+
+    meinheld.set_backlog(128)
+    meinheld.set_keepalive(0)
+    meinheld.listen(('0.0.0.0', port))
+    meinheld.set_access_logger(None)
+
+    workers = []
+    for i in xrange(4):
+        w = Process(target=run)
+        w.start()
+        workers.append(w)
+    while True:
+        for w in workers:
+            w.join(1)
+
+if __name__ == "__main__":
+    main()
