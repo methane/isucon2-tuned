@@ -223,7 +223,7 @@ def buy_page():
     )
     order_id = db.insert_id()
     rows = cur.execute(
-        'UPDATE stock SET order_id = %s WHERE variation_id = %s AND order_id IS NULL ORDER BY RAND() LIMIT 1',
+        'UPDATE stock SET order_id = %s WHERE variation_id = %s AND order_id IS NULL LIMIT 1',
         (order_id, variation_id)
     )
     if rows > 0:
