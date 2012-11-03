@@ -163,9 +163,14 @@ def render_top():
     global _top_page_cache
     _top_page_cache = render_template('index.html', artists=ARTISTS).encode('utf-8')
 
-@app.route("/")
-def top_page():
-    return _top_page_cache.replace(RECENT_SOLD_KEY, _recent_sold)
+#@app.route("/")
+def top_page(e, s):
+    #return _top_page_cache.replace(RECENT_SOLD_KEY, _recent_sold)
+    page = _top_page_cache.replace(RECENT_SOLD_KEY, _recent_sold)
+    s("200 OK", [('Content-Type', 'text/html'), ('Content-Length', str(len(page)))])
+    return [page]
+
+_artist_page_cache = None
 
 @app.route("/artist/<int:artist_id>")
 def artist_page(artist_id):
@@ -181,11 +186,8 @@ def artist_page(artist_id):
 
 @app.route("/ticket/<int:ticket_id>")
 def ticket_page(ticket_id):
-    cur = get_db().cursor()
-    
     ticket = TICKETS[ticket_id]
     variations = ticket['variations']
-
     return render_template(
         'ticket.html',
         ticket=ticket,
@@ -275,6 +277,8 @@ def static_middleware(app):
     u"""静的ファイルを Flask をショートカットして _static から転送する."""
     def get_cache(env, start):
         path = env['PATH_INFO']
+        if path == '/':
+            return top_page(env, start)
         if env['REQUEST_METHOD'] == 'GET' and path in _static:
             head, body = _static[path]
             start("200 OK", head)
@@ -282,8 +286,9 @@ def static_middleware(app):
         return app(env, start)
     return get_cache
 
+app.wsgi_app = static_middleware(app.wsgi_app)
+
 if __name__ == "__main__":
-    app.wsgi_app = static_middleware(app.wsgi_app)
     with app.test_request_context():
         prepare_static('static/')
         load_config()
