@@ -73,7 +73,7 @@ def render_recent_sold(db):
     global _recent_sold, _recent_sold_t
     if _recent_sold_t is None:
         _recent_sold_t = jinja2.Template(open('templates/recent_sold.html').read().decode('utf-8'))
-    _recent_sold = _recent_sold_t.render(recent_sold=get_recent_sold(db))
+    _recent_sold = _recent_sold_t.render(recent_sold=get_recent_sold(db)).encode('utf-8')
 
 ARTISTS = None
 ARTIST_TICKETS = defaultdict(list)
@@ -91,8 +91,6 @@ def initialize():
             print e
             time.sleep(1)
             continue
-
-    render_recent_sold(db)
 
     cur = db.cursor()
     cur.execute('SELECT * FROM artist')
@@ -141,6 +139,9 @@ def initialize():
                     remain += 1
             variation['vacancy'] = remain
 
+    render_top()
+    render_recent_sold(db)
+
     print "initialize() end"
 
 
@@ -157,11 +158,14 @@ def close_db_connection(exception):
     if hasattr(top, 'db'):
         top.db.close()
 
+_top_page_cache = None
+def render_top():
+    global _top_page_cache
+    _top_page_cache = render_template('index.html', artists=ARTISTS).encode('utf-8')
+
 @app.route("/")
 def top_page():
-    cur = get_db().cursor()
-    return render_template('index.html',
-            artists=ARTISTS).replace(RECENT_SOLD_KEY, _recent_sold)
+    return _top_page_cache.replace(RECENT_SOLD_KEY, _recent_sold)
 
 @app.route("/artist/<int:artist_id>")
 def artist_page(artist_id):
@@ -173,7 +177,7 @@ def artist_page(artist_id):
         'artist.html',
         artist=artist,
         tickets=tickets,
-    ).replace(RECENT_SOLD_KEY, _recent_sold)
+    ).encode('utf-8').replace(RECENT_SOLD_KEY, _recent_sold)
 
 @app.route("/ticket/<int:ticket_id>")
 def ticket_page(ticket_id):
@@ -186,7 +190,7 @@ def ticket_page(ticket_id):
         'ticket.html',
         ticket=ticket,
         variations=variations,
-    ).replace(RECENT_SOLD_KEY, _recent_sold)
+    ).encode('utf-8').replace(RECENT_SOLD_KEY, _recent_sold)
 
 @app.route("/buy", methods=['POST'])
 def buy_page():
@@ -245,11 +249,47 @@ def admin_csv():
         body += "\n"
     return Response(body, content_type="text/csv")
 
-load_config()
-initialize()
-import meinheld.server
+_static = {}
+
+def prepare_static(scan_dir, prefix='/'):
+    for dir, _, files in os.walk(scan_dir):
+        for f in files:
+            content_type = 'text/plain'
+            if f.endswith('.css'):
+                content_type = 'text/css'
+            elif f.endswith('.js'):
+                content_type = 'application/javascript'
+            elif f.endswith(('.jpg', '.jpeg')):
+                content_type = 'image/jpeg'
+            else:
+                print "Unknown file format:", f
+            print content_type, f
+            p = os.path.join(dir, f)
+            data = open(p).read()
+            _static[prefix + os.path.relpath(p, scan_dir)] = (
+                    [('Content-Length', str(len(data))),
+                     ('Content-Type', content_type),
+                     ], data)
+
+def static_middleware(app):
+    u"""静的ファイルを Flask をショートカットして _static から転送する."""
+    def get_cache(env, start):
+        path = env['PATH_INFO']
+        if env['REQUEST_METHOD'] == 'GET' and path in _static:
+            head, body = _static[path]
+            start("200 OK", head)
+            return (body,)
+        return app(env, start)
+    return get_cache
 
 if __name__ == "__main__":
+    app.wsgi_app = static_middleware(app.wsgi_app)
+    with app.test_request_context():
+        prepare_static('static/')
+        load_config()
+        initialize()
+    import meinheld.server
+
     port = int(os.environ.get("PORT", '5000'))
     #app.run(debug=1, host='0.0.0.0', port=port)
     meinheld.server.listen(('0.0.0.0', port))
