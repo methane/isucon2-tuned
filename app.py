@@ -247,7 +247,10 @@ def admin_csv():
 
 load_config()
 initialize()
+import meinheld.server
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", '5000'))
-    app.run(debug=1, host='0.0.0.0', port=port)
+    #app.run(debug=1, host='0.0.0.0', port=port)
+    meinheld.server.listen(('0.0.0.0', port))
+    meinheld.server.run(app)
