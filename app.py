@@ -59,7 +59,7 @@ def init_db():
                 if line:
                     cur.execute(line)
     notify_update(None, (None, None))
-    time.sleep(1)
+    time.sleep(2)
 
 _recent_sold_cache = None
 def get_recent_sold(db):
@@ -123,6 +123,10 @@ def initialize():
         ARTIST_TICKETS[ticket['artist_id']].append(ticket)
         TICKETS[ticket['id']] = ticket
 
+        for artist in ARTISTS:
+            if artist['id'] == ticket['artist_id']:
+                ticket['a_name'] = artist['name']
+
         cur.execute(
             '''SELECT COUNT(*) AS cnt FROM variation
                 INNER JOIN stock ON stock.variation_id = variation.id
@@ -185,29 +189,41 @@ def top_page(e, s):
     s("200 OK", [('Content-Type', 'text/html'), ('Content-Length', str(len(page)))])
     return [page]
 
-_artist_page_cache = None
+_artist_page_cache = {}
 
 @app.route("/artist/<int:artist_id>")
 def artist_page(artist_id):
+    page = _artist_page_cache.get(artist_id)
+    if page:
+        return page
     for artist in ARTISTS:
         if artist['id'] == artist_id:
             break
     tickets = ARTIST_TICKETS[artist_id]
-    return render_template(
+    page = render_template(
         'artist.html',
         artist=artist,
         tickets=tickets,
     ).encode('utf-8').replace(RECENT_SOLD_KEY, _recent_sold)
+    _artist_page_cache[artist_id] = page
+    return page
+
+_ticket_page_cache = {}
 
 @app.route("/ticket/<int:ticket_id>")
 def ticket_page(ticket_id):
     ticket = TICKETS[ticket_id]
     variations = ticket['variations']
-    return render_template(
+    if ticket_id in _ticket_page_cache:
+        return _ticket_page_cache[ticket_id]
+    page = render_template(
         'ticket.html',
         ticket=ticket,
         variations=variations,
     ).encode('utf-8').replace(RECENT_SOLD_KEY, _recent_sold)
+    _ticket_page_cache[ticket_id] = page
+    return page
+
 
 @app.route("/buy", methods=['POST'])
 def buy_page():
@@ -323,10 +339,24 @@ def subscribe_update():
             variation = VARIATIONS[int(variation_id)]
             variation['vacancy'] -= 1
             variation['stock'][seat_id] = member_id
-            variation['ticket']['count'] -= 1
+            ticket = variation['ticket']
+            ticket['count'] -= 1
             global _recent_sold_cache
-            _recent_sold_cache.insert(0, {'seat_id': seat_id, 'name': variation['name']})
+            _recent_sold_cache.insert(0,
+                    {'seat_id': seat_id,
+                    'v_name': variation['name'],
+                    'a_name': ticket['a_name'],
+                    't_name': ticket['name'],
+                    })
             del _recent_sold_cache[10:]
+            try:
+                del _ticket_page_cache[ticket['id']]
+            except KeyError:
+                pass
+            try:
+                del _artist_page_cache[ticket['artist_id']]
+            except KeyError:
+                pass
             render_recent_sold(connect_db())
 
 load_config()
@@ -355,12 +385,12 @@ def main():
         meinheld.run(app.wsgi_app)
 
     meinheld.set_backlog(128)
-    meinheld.set_keepalive(0)
+    meinheld.set_keepalive(1)
     meinheld.listen(('0.0.0.0', port))
     meinheld.set_access_logger(None)
 
     workers = []
-    for i in xrange(4):
+    for i in xrange(6):
         w = Process(target=run)
         w.start()
         workers.append(w)
