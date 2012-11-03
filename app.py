@@ -54,15 +54,19 @@ def init_db():
     print "Initializing database"
     with connect_db() as cur:
         with open('../config/database/initial_data.sql') as fp:
-            for line in fp.readlines():
+            for line in fp:
                 line = line.strip()
-                if len(line) > 0:
+                if line:
                     cur.execute(line)
-    db = connect_db()
     notify_update(None, (None, None))
     time.sleep(1)
 
+_recent_sold_cache = None
 def get_recent_sold(db):
+    global _recent_sold_cache
+    if _recent_sold_cache is not None:
+        return _recent_sold_cache
+
     cur = db.cursor()
     cur.execute('''SELECT stock.seat_id, variation.name AS v_name, ticket.name AS t_name, artist.name AS a_name FROM stock
         JOIN variation ON stock.variation_id = variation.id
@@ -70,8 +74,9 @@ def get_recent_sold(db):
         JOIN artist ON ticket.artist_id = artist.id
         WHERE order_id IS NOT NULL
         ORDER BY order_id DESC LIMIT 10''')
-    recent_sold = cur.fetchall()
+    recent_sold = list(cur.fetchall())
     cur.close()
+    _recent_sold_cache = recent_sold
     return recent_sold
 
 
@@ -309,16 +314,22 @@ def subscribe_update():
         if msg['type'] != 'message':
             continue
         variation_id, (member_id, seat_id) = cPickle.loads(msg['data'])
-        if variation_id == None:
+        if variation_id is None:
+            global _recent_sold_cache
+            _recent_sold_cache = None
             with app.test_request_context():
                 initialize()
         else:
-            render_recent_sold(connect_db())
             variation = VARIATIONS[int(variation_id)]
             variation['vacancy'] -= 1
             variation['stock'][seat_id] = member_id
             variation['ticket']['count'] -= 1
+            global _recent_sold_cache
+            _recent_sold_cache.insert(0, {'seat_id': seat_id, 'name': variation['name']})
+            del _recent_sold_cache[10:]
+            render_recent_sold(connect_db())
 
+load_config()
 app.wsgi_app = static_middleware(app.wsgi_app)
 
 def main():
@@ -326,7 +337,6 @@ def main():
     import threading
     from multiprocessing import Process
 
-    load_config()
     prepare_static('static/')
     with app.test_request_context():
         initialize()
