@@ -1,9 +1,16 @@
+# coding: utf-8
 # sudo aptitude install -y python-flask python-mysqldb python-routes
 from __future__ import with_statement
 
-import pymysql
-from pymysql.cursors import DictCursor 
-MySQLdb = pymysql
+import time
+import jinja2
+
+try:
+    import MySQLdb
+    from MySQLdb.cursors import DictCursor
+except ImportError:
+    import pymysql as MySQLdb
+    from pymysql.cursors import DictCursor 
 
 from flask import Flask, request, g, redirect, \
              render_template, _app_ctx_stack, Response
@@ -11,6 +18,9 @@ from flask import Flask, request, g, redirect, \
 import json, os
 
 config = {}
+
+
+RECENT_SOLD_KEY = "<!--# include recent_sold -->"
 
 app = Flask(__name__, static_url_path='')
 
@@ -39,9 +49,11 @@ def init_db():
                 line = line.strip()
                 if len(line) > 0:
                     cur.execute(line)
+    db = connect_db()
+    initialize()
 
-def get_recent_sold():
-    cur = get_db().cursor()
+def get_recent_sold(db):
+    cur = db.cursor()
     cur.execute('''SELECT stock.seat_id, variation.name AS v_name, ticket.name AS t_name, artist.name AS a_name FROM stock
         JOIN variation ON stock.variation_id = variation.id
         JOIN ticket ON variation.ticket_id = ticket.id
@@ -51,6 +63,30 @@ def get_recent_sold():
     recent_sold = cur.fetchall()
     cur.close()
     return recent_sold
+
+
+_recent_sold_t = None
+_recent_sold = b''
+
+def render_recent_sold(db):
+    global _recent_sold, _recent_sold_t
+    if _recent_sold_t is None:
+        _recent_sold_t = jinja2.Template(open('templates/recent_sold.html').read().decode('utf-8'))
+    _recent_sold = _recent_sold_t.render(recent_sold=get_recent_sold(db))
+
+def initialize():
+    print "initialize()"
+    while True:
+        # db が起動するのを待つ.
+        try:
+            db = connect_db()
+            break
+        except Exception as e:
+            print e
+            time.sleep(1)
+            continue
+    render_recent_sold(db)
+    print "initialize() end"
 
 
 def get_db():
@@ -72,8 +108,8 @@ def top_page():
     cur.execute('SELECT * FROM artist')
     artists = cur.fetchall()
     cur.close()
-    recent_sold = get_recent_sold()
-    return render_template('index.html', artists=artists, recent_sold=recent_sold)
+    print _recent_sold
+    return render_template('index.html', artists=artists).replace(RECENT_SOLD_KEY, _recent_sold)
 
 @app.route("/artist/<artist_id>")
 def artist_page(artist_id):
@@ -100,8 +136,7 @@ def artist_page(artist_id):
         'artist.html',
         artist=artist,
         tickets=tickets,
-        recent_sold=get_recent_sold()
-    )
+    ).replace(RECENT_SOLD_KEY, _recent_sold)
 
 @app.route("/ticket/<ticket_id>")
 def ticket_page(ticket_id):
@@ -139,8 +174,7 @@ def ticket_page(ticket_id):
         'ticket.html',
         ticket=ticket,
         variations=variations,
-        recent_sold=get_recent_sold()
-    )
+    ).replace(RECENT_SOLD_KEY, _recent_sold)
 
 @app.route("/buy", methods=['POST'])
 def buy_page():
@@ -166,6 +200,7 @@ def buy_page():
         );
         stock = cur.fetchone()
         cur.execute('COMMIT')
+        render_recent_sold(db)
         return render_template('complete.html', seat_id=stock['seat_id'], member_id=member_id)
     else:
         cur.execute('ROLLBACK')
@@ -194,9 +229,9 @@ def admin_csv():
         body += "\n"
     return Response(body, content_type="text/csv")
 
+load_config()
+initialize()
+
 if __name__ == "__main__":
-    load_config()
     port = int(os.environ.get("PORT", '5000'))
     app.run(debug=1, host='0.0.0.0', port=port)
-else:
-    load_config()
