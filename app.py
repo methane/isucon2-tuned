@@ -16,6 +16,7 @@ from flask import Flask, request, g, redirect, \
              render_template, _app_ctx_stack, Response
 
 import json, os
+from collections import defaultdict
 
 config = {}
 
@@ -74,6 +75,11 @@ def render_recent_sold(db):
         _recent_sold_t = jinja2.Template(open('templates/recent_sold.html').read().decode('utf-8'))
     _recent_sold = _recent_sold_t.render(recent_sold=get_recent_sold(db))
 
+ARTISTS = None
+ARTIST_TICKETS = defaultdict(list)
+TICKETS = {}
+VARIATIONS = {}
+
 def initialize():
     print "initialize()"
     while True:
@@ -85,7 +91,56 @@ def initialize():
             print e
             time.sleep(1)
             continue
+
     render_recent_sold(db)
+
+    cur = db.cursor()
+    cur.execute('SELECT * FROM artist')
+    global ARTISTS
+    ARTISTS = cur.fetchall()
+
+    global ARTIST_TICKETS, TICKETS, VARIATIONS
+    ARTIST_TICKETS.clear()
+    TICKETS.clear()
+    VARIATIONS.clear()
+
+    cur.execute('SELECT * FROM ticket')
+    tickets = cur.fetchall()
+    for ticket in tickets:
+        ARTIST_TICKETS[ticket['artist_id']].append(ticket)
+        TICKETS[ticket['id']] = ticket
+
+        cur.execute(
+            '''SELECT COUNT(*) AS cnt FROM variation
+                INNER JOIN stock ON stock.variation_id = variation.id
+                WHERE variation.ticket_id = %s AND stock.order_id IS NULL''',
+            ticket['id']
+        )
+        ticket['count'] = cur.fetchone()['cnt']
+
+        cur.execute(
+            'SELECT id, name FROM variation WHERE ticket_id = %s',
+            ticket['id']
+        )
+        variations = cur.fetchall()
+        ticket['variations'] = variations
+
+        for variation in variations:
+            variation['ticket'] = ticket
+            VARIATIONS[variation['id']] = variation
+            cur.execute(
+                'SELECT seat_id, order_id FROM stock WHERE variation_id = %s',
+                variation['id']
+            )
+            stocks = cur.fetchall()
+            variation['stock'] = {}
+            remain = 0
+            for row in stocks:
+                variation['stock'][row['seat_id']] = row['order_id']
+                if row['order_id'] is None:
+                    remain += 1
+            variation['vacancy'] = remain
+
     print "initialize() end"
 
 
@@ -105,70 +160,28 @@ def close_db_connection(exception):
 @app.route("/")
 def top_page():
     cur = get_db().cursor()
-    cur.execute('SELECT * FROM artist')
-    artists = cur.fetchall()
-    cur.close()
     print _recent_sold
-    return render_template('index.html', artists=artists).replace(RECENT_SOLD_KEY, _recent_sold)
+    return render_template('index.html',
+            artists=ARTISTS).replace(RECENT_SOLD_KEY, _recent_sold)
 
-@app.route("/artist/<artist_id>")
+@app.route("/artist/<int:artist_id>")
 def artist_page(artist_id):
-    cur = get_db().cursor()
-
-    cur.execute('SELECT id, name FROM artist WHERE id = %s LIMIT 1', artist_id)
-    artist = cur.fetchone()
-
-    cur.execute('SELECT id, name FROM ticket WHERE artist_id = %s', artist_id)
-    tickets = cur.fetchall()
-
-    for ticket in tickets:
-        cur.execute(
-            '''SELECT COUNT(*) AS cnt FROM variation
-                INNER JOIN stock ON stock.variation_id = variation.id
-                WHERE variation.ticket_id = %s AND stock.order_id IS NULL''',
-            ticket['id']
-        )
-        ticket['count'] = cur.fetchone()['cnt']
-
-    cur.close()
-
+    for artist in ARTISTS:
+        if artist['id'] == artist_id:
+            break
+    tickets = ARTIST_TICKETS[artist_id]
     return render_template(
         'artist.html',
         artist=artist,
         tickets=tickets,
     ).replace(RECENT_SOLD_KEY, _recent_sold)
 
-@app.route("/ticket/<ticket_id>")
+@app.route("/ticket/<int:ticket_id>")
 def ticket_page(ticket_id):
     cur = get_db().cursor()
     
-    cur.execute(
-        'SELECT t.*, a.name AS artist_name FROM ticket t INNER JOIN artist a ON t.artist_id = a.id WHERE t.id = %s LIMIT 1',
-        ticket_id
-    )
-    ticket = cur.fetchone()
-
-    cur.execute(
-        'SELECT id, name FROM variation WHERE ticket_id = %s',
-        ticket_id
-    )
-    variations = cur.fetchall()
-
-    for variation in variations:
-        cur.execute(
-            'SELECT seat_id, order_id FROM stock WHERE variation_id = %s',
-            variation['id']
-        )
-        stocks = cur.fetchall()
-        variation['stock'] = {}
-        for row in stocks:
-            variation['stock'][row['seat_id']] = row['order_id']
-
-        cur.execute(
-            'SELECT COUNT(*) AS cunt FROM stock WHERE variation_id = %s AND order_id IS NULL',
-            variation['id']
-        )
-        variation['vacancy'] = cur.fetchone()['cunt']
+    ticket = TICKETS[ticket_id]
+    variations = ticket['variations']
 
     return render_template(
         'ticket.html',
@@ -201,6 +214,10 @@ def buy_page():
         stock = cur.fetchone()
         cur.execute('COMMIT')
         render_recent_sold(db)
+        variation = VARIATIONS[int(variation_id)]
+        variation['vacancy'] -= 1
+        variation['stock'][stock['seat_id']] = member_id
+        variation['ticket']['count'] -= 1
         return render_template('complete.html', seat_id=stock['seat_id'], member_id=member_id)
     else:
         cur.execute('ROLLBACK')
