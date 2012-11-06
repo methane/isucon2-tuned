@@ -232,7 +232,6 @@ def buy_page():
 
     db = get_db()
     cur = db.cursor()
-    cur.execute('BEGIN')
     cur.execute(
         'INSERT INTO order_request (member_id) VALUES (%s)',
         (member_id)
@@ -242,13 +241,18 @@ def buy_page():
         'UPDATE stock SET order_id = %s WHERE variation_id = %s AND order_id IS NULL LIMIT 1',
         (order_id, variation_id)
     )
+    try:
+        db.commit()
+    except:
+        db.rollback()
+        rows = 0
+
     if rows > 0:
         cur.execute(
             'SELECT seat_id FROM stock WHERE order_id = %s LIMIT 1',
             (order_id)
         );
         stock = cur.fetchone()
-        cur.execute('COMMIT')
         notify_update(int(variation_id), (member_id, stock['seat_id']))
         #render_recent_sold(db)
         #variation = VARIATIONS[int(variation_id)]
